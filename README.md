@@ -13,11 +13,94 @@ Unlike most other projects, this package allows you to download images according
 
 ## Installation
 
-You can use the `yandex_images_crawler/download.py` script or install the package via `pip`.
+---
 
-```cmd
-pip install yandex-images-crawler
+## 🚀 Installation & Usage
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/robot00f/yandex-images-crawler.git
 ```
+
+### 2. Navigate to the project directory
+
+```bash
+cd yandex-images-crawler
+```
+
+### 3. Install dependencies
+
+Make sure you have Python installed, then install the required packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## ▶️ Running the crawler
+
+You can start the crawler by executing `download.py` and passing a Yandex Images link.
+
+### Basic example
+
+### ▶️ Command example
+
+#### ✔️ One-line (recommended for Windows)
+
+```bash
+python yandex_images_crawler/download.py --links "https://yandex.ru/images/search?url=https%3A%2F%2Favatars.mds.yandex.net%2Fget-images-cbir%2F4541870%2FB7Mk2KGEiNXvtZo4o891ag148%2Forig&rpt=imageview&cbird=178&cbir_id=4541870%2FB7Mk2KGEiNXvtZo4o891ag148&cbir_page=similar" --count 50 --headless
+```
+
+#### ✔️ Multi-line (Linux / macOS)
+
+```bash
+python yandex_images_crawler/download.py \
+  --links "https://yandex.ru/images/search?url=https%3A%2F%2Favatars.mds.yandex.net%2Fget-images-cbir%2F4541870%2FB7Mk2KGEiNXvtZo4o891ag148%2Forig&rpt=imageview&cbird=178&cbir_id=4541870%2FB7Mk2KGEiNXvtZo4o891ag148&cbir_page=similar" \
+  --count 50 \
+  --headless
+```
+
+---
+
+### ⚙️ Extra
+
+* `--headless` → runs the browser without opening a window (faster & cleaner for servers)
+
+---
+
+**Parameters:**
+
+* `--links` → Yandex Images URL (search or similar images)
+* `--count` → Number of images to download
+* `--dir` → Output directory
+
+---
+
+## 💡 Advanced usage
+
+### Download from "Similar Images" (imageview)
+
+You can also use links from Yandex's **"Similar Images"** feature:
+
+```bash
+python yandex_images_crawler/download.py \
+--links "https://yandex.ru/images/search?url=https%3A%2F%2Favatars.mds.yandex.net%2Fget-images-cbir%2F4541870%2FB7Mk2KGEiNXvtZo4o891ag148%2Forig&rpt=imageview&cbird=178&cbir_id=4541870%2FB7Mk2KGEiNXvtZo4o891ag148&cbir_page=similar" \
+--count 50 \
+ --headless
+```
+
+---
+
+## ⚠️ Notes
+
+* Make sure you have a compatible browser and driver installed (e.g., Chrome + ChromeDriver) if required by Selenium.
+* Paths should be adjusted depending on your operating system.
+* Large downloads may take time depending on your connection.
+
+---
+
 
 ## Usage
 
