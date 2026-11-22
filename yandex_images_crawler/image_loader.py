@@ -6,7 +6,6 @@ from pathlib import Path
 from queue import Empty
 from typing import FrozenSet, Tuple, Union
 
-import numpy as np
 import requests
 from PIL import Image
 
@@ -43,43 +42,45 @@ class ImageLoader:
         self.logger.setLevel(logging.INFO)
 
     def run(self):
-        while True:
-            if not self.is_active.value:
-                return
+        session = requests.Session()
+        session.headers.update(self.headers)
+        try:
+            while True:
+                if not self.is_active.value:
+                    return
 
-            try:
-                link, (width, height) = self.load_queue.get(timeout=1)
-            except Empty:
-                continue
-
-            if (
-                width is None
-                or height is None
-                or (width >= self.min_width and height >= self.min_height)
-            ):
-                self.logger.info(link)
                 try:
-                    response = requests.get(
-                        link, headers=self.headers, verify=False, timeout=10
-                    )
-                except:
+                    link, (width, height) = self.load_queue.get(timeout=1)
+                except Empty:
                     continue
-                if 200 <= response.status_code < 300:
+
+                if (
+                    width is None
+                    or height is None
+                    or (width >= self.min_width and height >= self.min_height)
+                ):
+                    self.logger.info(link)
                     try:
-                        img = Image.open(io.BytesIO(response.content))
-                    except:
+                        response = session.get(link, verify=False, timeout=10)
+                    except Exception:
                         continue
+                    if 200 <= response.status_code < 300:
+                        try:
+                            with Image.open(io.BytesIO(response.content)) as img:
+                                width, height = img.size
+                                hash_name = hashlib.sha256(img.tobytes()).hexdigest()
 
-                    width, height = img.size
-                    hash_name = hashlib.sha256(np.array(img)).hexdigest()
+                                img_path = self.image_dir / (hash_name + ".png")
 
-                    img_path = self.image_dir / (hash_name + ".png")
-
-                    if (
-                        hash_name not in self.skip_files
-                        and not img_path.exists()
-                        and width >= self.min_width
-                        and height >= self.min_height
-                    ):
-                        img = img.convert("RGB")
-                        img.save(img_path, "PNG")
+                                if (
+                                    hash_name not in self.skip_files
+                                    and not img_path.exists()
+                                    and width >= self.min_width
+                                    and height >= self.min_height
+                                ):
+                                    rgb_img = img.convert("RGB")
+                                    rgb_img.save(img_path, "PNG")
+                        except Exception:
+                            continue
+        finally:
+            session.close()

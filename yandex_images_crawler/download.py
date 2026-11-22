@@ -1,23 +1,16 @@
-try:
-    from .count_checker import CountChecker
-    from .image_loader import ImageLoader
-    from .yandex_crawler import YandexCrawler
-except ImportError:
-    from count_checker import CountChecker
-    from image_loader import ImageLoader
-    from yandex_crawler import YandexCrawler
-
 import argparse
 import logging
 import os
-from multiprocessing import Process, Queue, Value
 from pathlib import Path
 from typing import FrozenSet, List, Tuple, Union
 
 
-def __start_crawler(
-    start_link: str, load_queue: Queue, id: int, headless_mode: bool, is_active
-):
+def __start_crawler(start_link: str, load_queue, id: int, headless_mode: bool, is_active):
+    try:
+        from .yandex_crawler import YandexCrawler
+    except ImportError:
+        from yandex_crawler import YandexCrawler
+
     crawler = YandexCrawler(
         start_link=start_link,
         load_queue=load_queue,
@@ -29,23 +22,33 @@ def __start_crawler(
 
 
 def __start_loader(
-    load_queue: Queue,
+    load_queue,
     image_size: Tuple[int, int],
     image_dir: Union[str, Path],
     skip_files: FrozenSet[str],
     is_active,
 ):
-    crawler = ImageLoader(
+    try:
+        from .image_loader import ImageLoader
+    except ImportError:
+        from image_loader import ImageLoader
+
+    loader = ImageLoader(
         load_queue=load_queue,
         image_size=image_size,
         image_dir=image_dir,
         skip_files=skip_files,
         is_active=is_active,
     )
-    crawler.run()
+    loader.run()
 
 
 def __start_checker(image_dir: Union[Path, str], image_count: int, is_active):
+    try:
+        from .count_checker import CountChecker
+    except ImportError:
+        from count_checker import CountChecker
+
     checker = CountChecker(
         image_dir=image_dir,
         image_count=image_count,
@@ -54,7 +57,7 @@ def __start_checker(image_dir: Union[Path, str], image_count: int, is_active):
     checker.run()
 
 
-def download(
+def __download_browser(
     links: List[str],
     image_size: Tuple[int, int],
     image_count: int,
@@ -63,6 +66,8 @@ def download(
     loaders_per_link: int,
     headless_mode: bool,
 ):
+    from multiprocessing import Process, Queue, Value
+
     proc_num = len(links)
 
     load_queue = Queue(10 * proc_num)
@@ -103,6 +108,80 @@ def download(
 
     for process in processes:
         process.join()
+
+
+def download(
+    links: List[str],
+    image_size: Tuple[int, int],
+    image_count: int,
+    image_dir: Union[str, Path],
+    skip_files: FrozenSet[str],
+    loaders_per_link: int,
+    headless_mode: bool,
+    mode: str = "http",
+    page_delay: float = 1.0,
+):
+    if mode in ("http", "auto"):
+        try:
+            from .http_crawler import download_http
+        except ImportError:
+            from http_crawler import download_http
+
+        result = download_http(
+            links=links,
+            image_size=image_size,
+            image_count=image_count,
+            image_dir=image_dir,
+            skip_files=skip_files,
+            loaders_per_link=loaders_per_link,
+            page_delay=page_delay,
+        )
+
+        if mode == "http":
+            if result["captcha_hit"] and not result["reached_target"]:
+                logging.warning(
+                    "HTTP mode stopped due to Yandex CAPTCHA after downloading %d image(s). "
+                    "Re-run with --mode browser (or --mode auto) to continue using Chrome.",
+                    result["downloaded"],
+                )
+            return
+
+        if result["reached_target"]:
+            return
+
+        logging.warning(
+            "HTTP phase finished with %d new image(s) before reaching target; "
+            "falling back to browser mode...",
+            result["downloaded"],
+        )
+        current_files = []
+        for _, _, files in os.walk(image_dir):
+            current_files.extend(files)
+            break
+        updated_skip = skip_files.union(
+            frozenset(file.split(".")[0] for file in current_files)
+        )
+        fallback_links = result["remaining_links"] or links
+        __download_browser(
+            links=fallback_links,
+            image_size=image_size,
+            image_count=image_count,
+            image_dir=image_dir,
+            skip_files=updated_skip,
+            loaders_per_link=loaders_per_link,
+            headless_mode=headless_mode,
+        )
+        return
+
+    __download_browser(
+        links=links,
+        image_size=image_size,
+        image_count=image_count,
+        image_dir=image_dir,
+        skip_files=skip_files,
+        loaders_per_link=loaders_per_link,
+        headless_mode=headless_mode,
+    )
 
 
 def __parse_args():
@@ -176,12 +255,30 @@ def __parse_args():
         Use larger values to speed up loading, but take into account your computer's performance.""",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["http", "browser", "auto"],
+        default=None,
+        required=False,
+        help="""Crawling mode:
+        'http' (default) uses pure HTTP requests without launching a browser (minimal RAM/CPU).
+        'browser' uses Selenium + Chrome (useful for large crawls or solving CAPTCHAs interactively).
+        'auto' starts in 'http' mode and automatically falls back to 'browser' mode if CAPTCHA or pagination limit is reached before --count.""",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        metavar="SECONDS",
+        default=1.0,
+        required=False,
+        help="Delay in seconds between HTTP page requests (used in 'http' and 'auto' modes).",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         default=False,
         required=False,
-        help="""Run the program in headless mode.
-        The program will not open any browser windows.
+        help="""Run the browser in headless mode (implies --mode browser unless --mode is explicitly set).
         You can't fix some problems in browser windows manually, so use this option with caution.""",
     )
 
@@ -223,6 +320,11 @@ def __parse_args():
 
     new_args.loaders_per_link = max(1, args.loaders_per_link)
     new_args.headless_mode = args.headless
+    if args.mode is not None:
+        new_args.mode = args.mode
+    else:
+        new_args.mode = "browser" if args.headless else "http"
+    new_args.delay = max(0.0, args.delay)
 
     return new_args
 
@@ -238,6 +340,8 @@ def main():
         args.skip_files,
         args.loaders_per_link,
         args.headless_mode,
+        mode=args.mode,
+        page_delay=args.delay,
     )
 
 
