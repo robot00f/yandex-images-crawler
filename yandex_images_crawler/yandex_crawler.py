@@ -1,6 +1,9 @@
 import logging
+import queue
+import re
 import time
 from multiprocessing import Queue, Value, get_logger
+from urllib.parse import parse_qs, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -49,8 +52,11 @@ class YandexCrawler:
     def __get_image_link(self):
         width, height = None, None
 
-        # Possible CSS classes containing image size info
+        # Possible CSS classes containing image size info (grid redesign + legacy)
         size_sources = [
+            "ImagesViewerGridSizeButton-Content",
+            "ImagesViewerGridDownloadControl-Size",
+            "ImagesViewerGridSizeButton-Button",
             "OpenImageButton-SizesButton",
             "MMViewerButtons-ImageSizes",
             "OpenImageButton-SaveSize",
@@ -63,19 +69,23 @@ class YandexCrawler:
                 break
             for elem in self.driver.find_elements(By.CLASS_NAME, source):
                 try:
-                    width, height = [int(i) for i in elem.text.split("×")]
-                    break
-                except:
+                    match = re.search(r"(\d+)\s*[×xX]\s*(\d+)", elem.text or "")
+                    if match:
+                        width, height = int(match.group(1)), int(match.group(2))
+                        break
+                except Exception:
                     pass
-        else:
-            if width is None or height is None:
-                self.logger.critical(f"Process #{self.id} can't get image size.")
-                return
+
+        if width is None or height is None:
+            self.logger.warning(
+                f"Process #{self.id} can't get image size from DOM; loader will verify after download."
+            )
 
         link = None
 
-        # Possible CSS classes containing the high-res image URL
+        # Possible CSS classes containing the high-res image URL (grid redesign + legacy)
         link_sources = [
+            "ImagesViewerGridDownloadControl-Download",
             "OpenImageButton-Save",
             "MMViewerButtons-OpenImage",
             "MMViewerButtons-Button",
@@ -95,23 +105,53 @@ class YandexCrawler:
                 break
             for elem in self.driver.find_elements(By.CLASS_NAME, source):
                 try:
-                    link = elem.get_attribute("href")
+                    href = elem.get_attribute("href")
+                    if not href or not href.startswith("http"):
+                        continue
                     for b in blacklist:
-                        if b in link:
+                        if b in href:
                             time.sleep(5)
-                            link = elem.get_attribute("href")
+                            href = elem.get_attribute("href")
                             break
-                    break
-                except:
+                    if href and href.startswith("http"):
+                        link = href
+                        break
+                except Exception:
                     pass
-        else:
-            if link is None:
-                self.logger.critical(f"Process #{self.id} can't get image link.")
-                return
 
-        self.load_queue.put((link, (width, height)))
+        # Fallback: extract img_url parameter from the viewer URL
+        if link is None:
+            try:
+                img_urls = parse_qs(urlparse(self.driver.current_url).query).get(
+                    "img_url"
+                )
+                if img_urls and img_urls[0].startswith("http"):
+                    link = img_urls[0]
+            except Exception:
+                pass
+
+        if link is None:
+            self.logger.critical(f"Process #{self.id} can't get image link.")
+            return
+
+        while self.is_active.value:
+            try:
+                self.load_queue.put((link, (width, height)), timeout=1)
+                break
+            except queue.Full:
+                continue
 
     def __open_first_preview(self):
+        # If the URL already opens the image viewer directly, don't click a thumbnail
+        next_selector = (
+            "button[class*='ImagesViewer-ButtonNext'], "
+            "button[class*='CircleButton_type_next'], "
+            "button[class*='MediaViewer-ButtonNext'], "
+            "[class*='ButtonNext']"
+        )
+        if self.driver.find_elements(By.CSS_SELECTOR, next_selector):
+            return
+
         try:
             # Scroll down to force Yandex to load thumbnails (handles lazy loading)
             self.driver.execute_script("window.scrollTo(0, 300);")
@@ -140,30 +180,36 @@ class YandexCrawler:
         try:
             # Find any button that navigates to the next image in the viewer
             btn = self.driver.find_element(
-                By.CSS_SELECTOR, "button[class*='CircleButton_type_next'], button[class*='MediaViewer-ButtonNext'], [class*='ButtonNext']"
+                By.CSS_SELECTOR,
+                "button[class*='ImagesViewer-ButtonNext'], button[class*='CircleButton_type_next'], button[class*='MediaViewer-ButtonNext'], [class*='ButtonNext']",
             )
             # Click via JS to prevent overlay blocking issues
             self.driver.execute_script("arguments[0].click();", btn)
             time.sleep(0.5)
-        except:
+        except Exception:
             self.logger.critical(f"Process #{self.id} can't move to the next image.")
 
     def run(self):
-        self.driver.get(self.start_link)
-        
-        # Wait for the page to fully load before interacting
-        time.sleep(2) 
+        try:
+            self.driver.get(self.start_link)
 
-        self.__open_first_preview()
+            # Wait for the page to fully load before interacting
+            time.sleep(2)
 
-        while True:
-            if not self.is_active.value:
-                self.driver.close()
-                return
+            self.__open_first_preview()
 
+            while True:
+                if not self.is_active.value:
+                    return
+
+                try:
+                    self.__get_image_link()
+                    self.__open_next_preview()
+                except Exception as e:
+                    self.logger.critical(e)
+                    time.sleep(10)
+        finally:
             try:
-                self.__get_image_link()
-                self.__open_next_preview()
-            except Exception as e:
-                self.logger.critical(e)
-                time.sleep(10)
+                self.driver.quit()
+            except Exception:
+                pass

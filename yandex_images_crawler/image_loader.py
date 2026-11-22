@@ -3,6 +3,7 @@ import io
 import logging
 from multiprocessing import Queue, Value, get_logger
 from pathlib import Path
+from queue import Empty
 from typing import FrozenSet, Tuple, Union
 
 import numpy as np
@@ -46,7 +47,10 @@ class ImageLoader:
             if not self.is_active.value:
                 return
 
-            link, (width, height) = self.load_queue.get()
+            try:
+                link, (width, height) = self.load_queue.get(timeout=1)
+            except Empty:
+                continue
 
             if (
                 width is None
